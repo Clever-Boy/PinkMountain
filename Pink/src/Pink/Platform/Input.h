@@ -29,10 +29,18 @@ public:
     static bool IsMouseButtonPressed(MouseButton button);
     static std::pair<float, float> GetMousePosition(); // pixels, top-left origin
 
+    // Scroll wheel (Lesson 11): GLFW delivers scroll as events; Input
+    // accumulates them and hands the total to whoever asks, once per frame.
+    // TakeScrollOffset() returns the accumulated (x, y) offset and resets it
+    // — call it once per frame (usually in OnUpdate).
+    static void AddScrollOffset(float xOffset, float yOffset); // platform layer only
+    static std::pair<float, float> TakeScrollOffset();
+
     static void SetActiveWindow(Window* window);
 
 private:
     static Window* s_ActiveWindow;
+    static std::pair<float, float> s_ScrollOffset;
     static ::GLFWwindow* ActiveGLFWWindow();
 };
 

@@ -1,6 +1,7 @@
 #include "Pink/Platform/GLFW/GLFWWindow.h"
 #include "Pink/Core/Log.h"
 #include "Pink/Core/Assert.h"
+#include "Pink/Platform/Input.h"
 
 #include <GLFW/glfw3.h>
 
@@ -75,6 +76,13 @@ void GLFWWindow::Init()
         self->m_Spec.Height = static_cast<uint32_t>(height);
         if (self->m_ResizeCallback)
             self->m_ResizeCallback(self->m_Spec.Width, self->m_Spec.Height);
+    });
+
+    // Lesson 11: scroll wheel. GLFW reports scroll as discrete events; Input
+    // accumulates them so gameplay code can poll once per frame (TakeScrollOffset).
+    glfwSetScrollCallback(m_Window, [](GLFWwindow* window, double xoffset, double yoffset) {
+        (void)window;
+        Input::AddScrollOffset(static_cast<float>(xoffset), static_cast<float>(yoffset));
     });
 
     PM_CORE_INFO("Window created: '{}' ({}x{})", m_Spec.Title, m_Spec.Width, m_Spec.Height);

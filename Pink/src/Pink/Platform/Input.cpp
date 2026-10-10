@@ -10,10 +10,24 @@
 namespace Pink {
 
 Window* Input::s_ActiveWindow = nullptr;
+std::pair<float, float> Input::s_ScrollOffset{ 0.0f, 0.0f };
 
 void Input::SetActiveWindow(Window* window)
 {
     s_ActiveWindow = window;
+}
+
+void Input::AddScrollOffset(float xOffset, float yOffset)
+{
+    s_ScrollOffset.first += xOffset;
+    s_ScrollOffset.second += yOffset;
+}
+
+std::pair<float, float> Input::TakeScrollOffset()
+{
+    auto offset = s_ScrollOffset;
+    s_ScrollOffset = { 0.0f, 0.0f }; // consume-on-read: one frame's scroll, once
+    return offset;
 }
 
 // One explicit mapping table. Values match GLFW's numbering by design, but

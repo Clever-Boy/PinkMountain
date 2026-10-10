@@ -1,11 +1,9 @@
-// SandboxApp.cpp — the demo client (Lessons 2–10).
+// SandboxApp.cpp — the demo client (Lessons 2–11).
 // The engine owns main() (see Core/EntryPoint.h); this file only describes
 // the application: its window spec, its subsystems, and its per-frame hooks.
 //
-// Current state: a textured quad (Lesson 10). The texture is procedural —
-// a 256x256 checkerboard generated on the CPU — so the whole pipeline is
-// provable with zero asset files. Edit Sandbox/assets/shaders/TexturedQuad.glsl
-// while the app runs: the shader hot-reloads (Lesson 8).
+// Current state: a textured, rotating cube (Lesson 11) with a PerspectiveCamera
+// and a mouse orbit controller. Left-drag orbits, wheel dollies in/out.
 
 #include "Pink/Core/EntryPoint.h" // pulls in Application + Log + main()
 
@@ -16,8 +14,11 @@
 #include "Pink/Renderer/Buffer.h"
 #include "Pink/Renderer/VertexArray.h"
 #include "Pink/Renderer/Texture.h"
+#include "Pink/Renderer/Camera.h"
 #include "Pink/Memory/MemoryService.h"
 
+#include <algorithm> // std::clamp
+#include <cmath>
 #include <filesystem>
 
 class SandboxApp : public Pink::Application
@@ -49,13 +50,41 @@ protected:
     {
         using namespace Pink;
 
-        // Interleaved: position (vec3) + UV (vec2) per vertex. Stride = 20
-        // bytes — computed by BufferLayout, never hand-written.
-        float vertices[4 * 5] = {
-            -0.5f, -0.5f, 0.0f,   0.0f, 0.0f,
-             0.5f, -0.5f, 0.0f,   1.0f, 0.0f,
-             0.5f,  0.5f, 0.0f,   1.0f, 1.0f,
-            -0.5f,  0.5f, 0.0f,   0.0f, 1.0f
+        // Textured cube: 24 vertices (4 per face — UVs can't be shared across
+        // a hard edge, so the 8 geometric corners become 24 shading vertices).
+        // Winding is CCW seen from outside each face (OpenGL's default front
+        // face); verified via Edge1 x Edge2 normals during Lesson 11 authoring.
+        float vertices[24 * 5] = {
+            // +X face
+             0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
+             0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
+             0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
+             0.5f,  0.5f,  0.5f,   0.0f, 1.0f,
+            // -X face
+            -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
+            -0.5f, -0.5f,  0.5f,   1.0f, 0.0f,
+            -0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
+            -0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
+            // +Y face
+            -0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
+             0.5f,  0.5f,  0.5f,   1.0f, 0.0f,
+             0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
+            -0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
+            // -Y face
+            -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
+             0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
+             0.5f, -0.5f,  0.5f,   1.0f, 1.0f,
+            -0.5f, -0.5f,  0.5f,   0.0f, 1.0f,
+            // +Z face
+            -0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
+             0.5f, -0.5f,  0.5f,   1.0f, 0.0f,
+             0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
+            -0.5f,  0.5f,  0.5f,   0.0f, 1.0f,
+            // -Z face
+             0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
+            -0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
+            -0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
+             0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
         };
 
         m_VertexBuffer = VertexBuffer::Create(vertices, sizeof(vertices));
@@ -68,12 +97,19 @@ protected:
         m_VertexArray = VertexArray::Create();
         m_VertexArray->AddVertexBuffer(m_VertexBuffer);
 
-        // Indexed: 4 vertices, 6 indices — no duplicated corners. This is
-        // where the EBO earns its keep (Lesson 9).
-        uint32_t indices[6] = { 0, 1, 2, 2, 3, 0 };
-        m_IndexBuffer = IndexBuffer::Create(indices, 6);
+        // 6 faces x 2 triangles. Generated, not hand-typed: the pattern is
+        // identical per face, so a loop beats 36 literals (and a typo).
+        uint32_t indices[36];
+        for (uint32_t face = 0; face < 6; ++face)
+        {
+            uint32_t b = face * 4, o = face * 6;
+            indices[o + 0] = b + 0; indices[o + 1] = b + 1; indices[o + 2] = b + 2;
+            indices[o + 3] = b + 2; indices[o + 4] = b + 3; indices[o + 5] = b + 0;
+        }
+        m_IndexBuffer = IndexBuffer::Create(indices, 36);
         m_VertexArray->SetIndexBuffer(m_IndexBuffer);
 
+        // Same procedural checkerboard as Lesson 10 — zero asset files.
         m_Texture = Texture2D::Create(256, 256);
         const uint32_t size = 256, check = 32;
         uint8_t* pixels = new uint8_t[size * size * 4];
@@ -87,9 +123,11 @@ protected:
         m_Texture->SetData(pixels, size * size * 4);
         delete[] pixels;
 
-        m_ShaderPath = "assets/shaders/TexturedQuad.glsl";
+        m_ShaderPath = "assets/shaders/Cube.glsl";
         m_Shader = Shader::Create(m_ShaderPath);
         m_ShaderWriteTime = std::filesystem::last_write_time(m_ShaderPath);
+
+        AimCamera(); // place the camera before the first frame
     }
 
     // Client per-frame hook — called after subsystem updates, before render.
@@ -99,6 +137,36 @@ protected:
 
         if (Input::IsKeyPressed(KeyCode::Escape))
             RequestShutdown();
+
+        // --- Lesson 11: orbit controller --------------------------------
+        // Left-drag orbits the target; the wheel dollies in/out. The camera
+        // itself only ever receives position + yaw/pitch — orbiting is just
+        // spherical coordinates around m_Target, recomputed per frame.
+        auto [mx, my] = Input::GetMousePosition();
+        if (Input::IsMouseButtonPressed(MouseButton::Left))
+        {
+            if (m_Dragging)
+            {
+                float dx = mx - m_LastMouseX, dy = my - m_LastMouseY;
+                m_Yaw   += dx * 0.005f; // drag right -> orbit right
+                m_Pitch -= dy * 0.005f; // drag up    -> look up
+                // Pitch clamp lives in the camera (SetYawPitch) — ±89deg,
+                // so the up-vector cross product never degenerates.
+            }
+            m_LastMouseX = mx; m_LastMouseY = my;
+            m_Dragging = true;
+        }
+        else
+        {
+            m_Dragging = false; // release: next press re-arms without a jump
+        }
+
+        auto [scrollX, scrollY] = Input::TakeScrollOffset();
+        (void)scrollX;
+        m_Distance = std::clamp(m_Distance - scrollY * 0.5f, 1.5f, 20.0f);
+
+        AimCamera();
+        m_Time += deltaTime;
 
         // Lesson 8 hot reload: poll the shader file's write time on the main
         // thread. Every 0.5 s is cheap enough to never show up in a profile,
@@ -114,19 +182,6 @@ protected:
                 m_Shader->Reload(); // broken edit? the old program survives (Lesson 8 invariant)
             }
         }
-
-        // Lesson 6 input demo: log polled state once per second.
-        m_LogTimer += deltaTime;
-        if (m_LogTimer >= 1.0f)
-        {
-            m_LogTimer = 0.0f;
-            if (Input::IsKeyPressed(KeyCode::Left))  PM_INFO("Left arrow held");
-            if (Input::IsKeyPressed(KeyCode::Right)) PM_INFO("Right arrow held");
-            if (Input::IsKeyPressed(KeyCode::Up))    PM_INFO("Up arrow held");
-            if (Input::IsKeyPressed(KeyCode::Down))  PM_INFO("Down arrow held");
-            auto [mx, my] = Input::GetMousePosition();
-            PM_INFO("Mouse position: ({}, {})", mx, my);
-        }
     }
 
     // The frame's draw calls happen here, in order — between
@@ -138,7 +193,36 @@ protected:
         // The sampler uniform takes the TEXTURE UNIT (0), not the texture
         // handle. Passing the handle is the #1 beginner texture bug.
         m_Shader->SetInt("u_Texture", 0);
+        m_Shader->SetMat4("u_ViewProjection", m_Camera.GetViewProjectionMatrix());
+        // Slow Y spin so the 3D-ness reads instantly on first launch.
+        // Depth testing (enabled in the Lesson-7 renderer init) + the depth
+        // clear in BeginFrame are what keep the far faces behind the near ones.
+        m_Shader->SetMat4("u_Model", Pink::Rotate(m_Time * 0.5f, Pink::Vec3{ 0.0f, 1.0f, 0.0f }));
         Pink::Renderer::Submit(m_Shader, m_VertexArray);
+    }
+
+    // Engine hook (Lesson 11): the window reports size changes; the camera
+    // must track the aspect or the image stretches. Application guards the
+    // 0x0 minimized case before calling — aspect would divide by zero.
+    void OnWindowResize(uint32_t width, uint32_t height) override
+    {
+        m_Camera.SetAspectRatio(static_cast<float>(width) / static_cast<float>(height));
+    }
+
+private:
+    // Spherical orbit -> camera position + yaw/pitch. forward(yaw, pitch)
+    // points from the camera TOWARD the target, so position = target - f*d
+    // and the camera's yaw/pitch are exactly the orbit's yaw/pitch.
+    void AimCamera()
+    {
+        using namespace Pink;
+        Vec3 forward{
+            std::cos(m_Yaw) * std::cos(m_Pitch),
+            std::sin(m_Pitch),
+            std::sin(m_Yaw) * std::cos(m_Pitch)
+        };
+        m_Camera.SetPosition(m_Target - forward * m_Distance);
+        m_Camera.SetYawPitch(m_Yaw, m_Pitch);
     }
 
 private:
@@ -148,12 +232,22 @@ private:
     Pink::Ref<Pink::VertexArray> m_VertexArray;
     Pink::Ref<Pink::Texture2D> m_Texture;
 
+    // Lesson 11: the camera + orbit state. Aspect matches the 1280x720 spec
+    // above; OnWindowResize keeps it honest afterwards.
+    Pink::PerspectiveCamera m_Camera{ 45.0f, 1280.0f / 720.0f, 0.1f, 100.0f };
+    Pink::Vec3 m_Target{ 0.0f, 0.0f, 0.0f };
+    float m_Yaw = Pink::Radians(45.0f);
+    float m_Pitch = Pink::Radians(-20.0f);
+    float m_Distance = 4.0f;
+
+    bool m_Dragging = false;
+    float m_LastMouseX = 0.0f, m_LastMouseY = 0.0f;
+    float m_Time = 0.0f;
+
     // Hot-reload bookkeeping (Lesson 8)
     std::string m_ShaderPath;
     std::filesystem::file_time_type m_ShaderWriteTime;
     float m_ReloadTimer = 0.0f;
-
-    float m_LogTimer = 0.0f;
 };
 
 Pink::Application* Pink::CreateApplication()

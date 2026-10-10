@@ -49,8 +49,13 @@ void Application::Run()
 
     // Platform event → renderer policy. The lambda keeps Window free of
     // renderer knowledge: Window just reports "size changed".
-    m_Window->SetResizeCallback([](uint32_t width, uint32_t height) {
+    m_Window->SetResizeCallback([this](uint32_t width, uint32_t height) {
         Renderer::OnWindowResize(width, height);
+        // Lesson 11: notify the client too (camera aspect tracking). The 0x0
+        // minimized case is filtered here — a zero dimension would divide by
+        // zero in an aspect ratio, so the hook contract guarantees both > 0.
+        if (width > 0 && height > 0)
+            OnWindowResize(width, height);
     });
 
     OnStart(); // client hook (Sandbox): GPU resources are created here, AFTER

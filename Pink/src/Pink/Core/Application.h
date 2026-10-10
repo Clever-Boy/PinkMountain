@@ -60,6 +60,10 @@ protected:
     virtual void OnStart() {}                       // NEW (Lesson 9): once, after Renderer::Init()
     virtual void OnUpdate(float deltaTime) { (void)deltaTime; }
     virtual void OnRender() {}                      // NEW (Lesson 9): per frame, between BeginFrame and SwapBuffers
+    // NEW (Lesson 11): window size changed. Contract: width and height are
+    // both > 0 (Application filters the 0x0 minimized case) — safe for
+    // aspect-ratio math. Default is a no-op.
+    virtual void OnWindowResize(uint32_t width, uint32_t height) { (void)width; (void)height; }
 
 private:
     static Application* s_Instance;
