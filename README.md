@@ -4,11 +4,11 @@ A modern 3D game engine in **C++20**, built lesson-by-lesson as a learning proje
 Every system is written from scratch and commented with the *why* behind each design
 decision — the goal is understanding, not just a working renderer.
 
-> Status: Lessons 1–10 complete. The engine opens a window, compiles GLSL shaders
-> with hot-reload, and renders a textured quad through an API-agnostic
-> renderer seam (OpenGL backend): shaders (Lesson 8), buffers/meshes with
-> VBO/VAO/EBO and a first triangle (Lesson 9), textures with stb_image
-> loading, samplers and mipmaps (Lesson 10).
+> Status: Lessons 1–13 complete. The engine opens a window, compiles GLSL shaders
+> with hot-reload, and renders three lit cubes on a shadowed floor through an
+> API-agnostic renderer seam (OpenGL backend): cameras (Lesson 11), forward
+> lighting with Blinn-Phong and PBR Cook-Torrance (Lesson 12), and shadow
+> mapping — directional + point-light cubemaps (Lesson 13).
 
 ## What's inside (by lesson)
 
@@ -24,6 +24,9 @@ decision — the goal is understanding, not just a working renderer.
 | 8 | Shaders: GLSL compile/link, uniforms, hot-reload | `Pink/Renderer/Shader.h`, `Renderer/OpenGL/OpenGLShader.*`, `Sandbox/assets/shaders/` |
 | 9 | Buffers & meshes: VBO/VAO/EBO, vertex layouts, first triangle | `Pink/Renderer/Buffer.h`, `Renderer/VertexArray.h`, `Renderer/OpenGL/OpenGL*.cpp`, `Renderer::Submit` |
 | 10 | Textures: stb_image loading, samplers, mipmaps | `Pink/Renderer/Texture.h`, `Renderer/OpenGL/OpenGLTexture2D.*`, `Pink/vendor/stb/` |
+| 11 | Cameras: perspective/orthographic, orbit controller, resize handling | `Pink/Renderer/Camera.h`, `Renderer/Camera.cpp`, `SandboxApp` orbit + scroll zoom |
+| 12 | Lighting: forward rendering, Blinn-Phong → PBR Cook-Torrance (GGX/Schlick) | `Pink/Renderer/Light.h`, `Material.h`, `LightManager.h`, `Sandbox/assets/shaders/Lit_Phong.glsl`, `Lit_PBR.glsl` |
+| 13 | Shadows: shadow mapping (directional + point cubemap), PCF, slope-scaled bias | `Pink/Renderer/Framebuffer.h`, `Renderer/ShadowMap.h`, `Renderer/OpenGL/OpenGLFramebuffer.*`, `Sandbox/assets/shaders/Depth.glsl`, `DepthCube.glsl` |
 
 ## Prerequisites
 
@@ -50,12 +53,14 @@ cmake --build build --config Debug
 # build\bin\Debug\Sandbox.exe  (Windows, multi-config generators)
 ```
 
-Run the Sandbox: a 1280×720 window renders a textured quad (a procedural
-checkerboard — no image files needed). The console logs the active renderer
-backend plus the GPU vendor/renderer/version string.
-**Esc** quits; arrow keys and mouse position are logged once per second
-(input polling demo from Lesson 6). Edit `Sandbox/assets/shaders/TexturedQuad.glsl`
-while the app runs — the shader hot-reloads without restarting (Lesson 8).
+Run the Sandbox: a 1280×720 window renders three lit cubes (red plastic,
+brushed steel, gold) on a floor, with directional and point-light shadows.
+The console logs the active renderer backend plus the GPU vendor/renderer/
+version string.
+**Esc** quits; drag with the mouse to orbit, scroll to zoom (Lesson 11).
+**1** selects Blinn-Phong, **2** selects PBR (Lesson 12); **V** toggles
+shadows for A/B comparison (Lesson 13). Edit `Sandbox/assets/shaders/*.glsl`
+while the app runs — shaders hot-reload without restarting (Lesson 8).
 
 ## Project structure
 
@@ -72,7 +77,8 @@ Pink/                   # The engine: a static library, namespace Pink::
                          # GLFW/ (the only place GLFW appears)
     Renderer/            # Renderer (static facade), RendererAPI (virtual seam),
                          # Shader, Buffer/VertexArray, Texture (abstractions),
-                         # OpenGL/ (the only place glad/GL headers appear)
+                         # Camera, Light, Material, LightManager, Framebuffer,
+                         # ShadowMap, OpenGL/ (the only place glad/GL headers appear)
 Sandbox/                 # Demo app: links the engine, owns main() via EntryPoint
   assets/shaders/        # GLSL sources, copied next to the binary at build time
 ```
@@ -94,10 +100,9 @@ namespace PM = Pink; // your files, your choice — the engine doesn't care
 
 ## Roadmap
 
-- Lesson 11: Camera — perspective/orthographic, view/projection, controllers
-- Then: lighting/PBR, shadows, ECS scene, post-processing,
-  asset pipeline, ImGui editor, physics, audio, Lua scripting, animation,
-  particles, job system, Tracy profiling, capstone demo scene.
+- Lesson 14: Post-processing — HDR, tone mapping, bloom (reuses the Lesson 13 Framebuffer)
+- Then: ECS scene, asset pipeline, ImGui editor, physics, audio, Lua scripting,
+  animation, particles, job system, Tracy profiling, capstone demo scene.
 
 ## Acknowledgments
 
