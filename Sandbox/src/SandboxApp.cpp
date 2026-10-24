@@ -1,10 +1,10 @@
-// SandboxApp.cpp — the demo client (Lessons 2–12).
+// SandboxApp.cpp — the demo client (Lessons 2–13).
 // The engine owns main() (see Core/EntryPoint.h); this file only describes
 // the application: its window spec, its subsystems, and its per-frame hooks.
 //
-// Current state (Lesson 12): three lit cubes — red plastic, brushed steel,
-// gold — under one sun + two point lights. Key 1 = Blinn-Phong, key 2 = PBR
-// Cook-Torrance. Same scene, same lights: the difference is the model.
+// Current state (Lesson 13): three lit cubes on a floor, with shadows. One
+// directional (sun) shadow map + one point-light cubemap shadow. Key 1 =
+// Blinn-Phong, key 2 = PBR. Key V toggles shadows for A/B comparison.
 
 #include "Pink/Core/EntryPoint.h" // pulls in Application + Log + main()
 
@@ -19,6 +19,7 @@
 #include "Pink/Renderer/Light.h"
 #include "Pink/Renderer/Material.h"
 #include "Pink/Renderer/LightManager.h"
+#include "Pink/Renderer/ShadowMap.h"
 #include "Pink/Memory/MemoryService.h"
 
 #include <algorithm> // std::clamp
@@ -66,12 +67,8 @@ protected:
     {
         using namespace Pink;
 
-        // Textured cube, Lesson-12 edition: 24 vertices (4 per face — neither
-        // UVs nor NORMALS can be shared across a hard edge, so the 8 geometric
-        // corners become 24 shading vertices). Layout is now pos3/normal3/uv2.
-        // Winding is the Lesson-11 verified CCW order; each quad gets its face
-        // normal on all four vertices (flat shading — smooth normals arrive
-        // with real mesh loading).
+        // Cube mesh (Lesson 12, unchanged): 24 vertices, pos3/normal3/uv2,
+        // Lesson-11 verified CCW winding, per-face normals.
         struct Face { float nx, ny, nz; float px[4][3]; };
         const Face faces[6] = {
             { 1, 0, 0,  {{ 0.5f,-0.5f, 0.5f},{ 0.5f,-0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f, 0.5f}} }, // +X
@@ -119,6 +116,24 @@ protected:
         m_IndexBuffer = IndexBuffer::Create(indices, 36);
         m_VertexArray->SetIndexBuffer(m_IndexBuffer);
 
+        // --- Lesson 13: the floor (shadow receiver) -------------------------
+        // A 20x20 plane at y = -0.5 (the cubes' bottom faces sit exactly on
+        // it). Same pos3/normal3/uv2 layout, so it shares the depth shaders
+        // and the lighting shaders with the cubes. Normal is +Y everywhere.
+        float floorVerts[4 * 8] = {
+            -10.0f, -0.5f, -10.0f,   0.0f, 1.0f, 0.0f,   0.0f, 0.0f,
+             10.0f, -0.5f, -10.0f,   0.0f, 1.0f, 0.0f,   1.0f, 0.0f,
+             10.0f, -0.5f,  10.0f,   0.0f, 1.0f, 0.0f,   1.0f, 1.0f,
+            -10.0f, -0.5f,  10.0f,   0.0f, 1.0f, 0.0f,   0.0f, 1.0f,
+        };
+        m_FloorVertexBuffer = VertexBuffer::Create(floorVerts, sizeof(floorVerts));
+        m_FloorVertexBuffer->SetLayout(layout);
+        m_FloorVertexArray = VertexArray::Create();
+        m_FloorVertexArray->AddVertexBuffer(m_FloorVertexBuffer);
+        uint32_t floorIndices[6] = { 0, 1, 2, 2, 3, 0 };
+        m_FloorIndexBuffer = IndexBuffer::Create(floorIndices, 6);
+        m_FloorVertexArray->SetIndexBuffer(m_FloorIndexBuffer);
+
         // The two lighting shaders. Key 1 = Phong, key 2 = PBR.
         m_PhongPath = "assets/shaders/Lit_Phong.glsl";
         m_PBRPath = "assets/shaders/Lit_PBR.glsl";
@@ -128,21 +143,28 @@ protected:
         m_PBRWriteTime = std::filesystem::last_write_time(m_PBRPath);
         m_ActiveShader = m_PBRShader; // start on PBR — the lesson's destination
 
+        // Lesson 13: the depth shaders (no hot reload needed — they rarely change).
+        m_DepthShader = Shader::Create("assets/shaders/Depth.glsl");
+        m_DepthCubeShader = Shader::Create("assets/shaders/DepthCube.glsl");
+
         // --- Lesson 12: the scene's lights --------------------------------
         DirectionalLight sun;
         sun.Direction = Normalize(Vec3{ -0.5f, -1.0f, -0.3f });
         sun.Color = Vec3{ 1.0f, 0.96f, 0.90f }; // warm noon sun
         sun.Intensity = 1.2f;
         m_Lights->SetSun(sun);
+        m_DirShadow.SetLightDirection(sun.Direction);
 
-        PointLight warm; // warm practical, stage right
+        PointLight warm; // warm practical, stage right — THE shadow-casting point light
         warm.Position = Vec3{ 3.0f, 2.0f, 2.0f };
         warm.Color = Vec3{ 1.0f, 0.6f, 0.3f };
         warm.Intensity = 8.0f; // 1/d² eats most of it: at d=4, effective ~= 0.5
         warm.Range = 12.0f;
         m_Lights->AddPointLight(warm);
+        m_PointShadow.SetLightPosition(warm.Position);
+        m_WarmLightPos = warm.Position;
 
-        PointLight cool; // cool rim, stage left
+        PointLight cool; // cool rim, stage left — unshadowed
         cool.Position = Vec3{ -3.0f, 1.5f, -1.0f };
         cool.Color = Vec3{ 0.3f, 0.5f, 1.0f };
         cool.Intensity = 6.0f;
@@ -150,11 +172,10 @@ protected:
         m_Lights->AddPointLight(cool);
 
         // --- Lesson 12: the three materials --------------------------------
-        // Red plastic: dielectric, mid roughness. Gold/steel: metals.
         m_Materials.push_back({ Vec3{ 0.80f, 0.05f, 0.05f }, 0.0f, 0.35f }); // red plastic
         m_Materials.push_back({ Vec3{ 0.70f, 0.72f, 0.75f }, 1.0f, 0.40f }); // brushed steel
         m_Materials.push_back({ Vec3(1.00f, 0.71f, 0.29f) , 1.0f, 0.25f }); // gold
-        // (Member init order: Albedo, Metallic, Roughness — AO defaults to 1.)
+        m_FloorMaterial = { Vec3{ 0.5f, 0.5f, 0.5f }, 0.0f, 0.9f };          // matte gray floor
 
         AimCamera();
     }
@@ -166,10 +187,17 @@ protected:
         if (Input::IsKeyPressed(KeyCode::Escape))
             RequestShutdown();
 
-        // Lighting-model toggle: same scene, same lights — the visible
-        // difference is the MODEL. Flip back and forth on the gold cube.
+        // Lighting-model toggle (Lesson 12).
         if (Input::IsKeyPressed(KeyCode::D1)) m_ActiveShader = m_PhongShader;
         if (Input::IsKeyPressed(KeyCode::D2)) m_ActiveShader = m_PBRShader;
+
+        // Lesson 13: shadow toggle, EDGE-triggered. Polling IsKeyPressed every
+        // frame would flip V on/off 60x per second while held — the
+        // was-pressed flag turns a hold into a single toggle.
+        bool vPressed = Input::IsKeyPressed(KeyCode::V);
+        if (vPressed && !m_VWasPressed)
+            m_ShadowsEnabled = !m_ShadowsEnabled;
+        m_VWasPressed = vPressed;
 
         // Orbit controller (Lesson 11, unchanged).
         auto [mx, my] = Input::GetMousePosition();
@@ -195,7 +223,7 @@ protected:
         AimCamera();
         m_Time += deltaTime;
 
-        // Hot reload, both shaders (Lesson 8 pattern, x2).
+        // Hot reload, both lighting shaders (Lesson 8 pattern, x2).
         m_ReloadTimer += deltaTime;
         if (m_ReloadTimer >= 0.5f)
         {
@@ -209,36 +237,98 @@ protected:
     {
         using namespace Pink;
 
+        // --- Pass 1: directional depth --------------------------------------
+        // Render the scene from the sun's point of view, depth only.
+        m_DirShadow.BeginDepthPass();
+        m_DepthShader->Bind();
+        m_DepthShader->SetMat4("u_LightSpaceMatrix", m_DirShadow.GetLightSpaceMatrix());
+        RenderScene(m_DepthShader, true);
+        m_DirShadow.EndDepthPass();
+
+        // --- Pass 2: point depth (6 cubemap faces) --------------------------
+        // Same idea, six times: one render per face of the warm light's cube.
+        // This is the forward-renderer cost law in action — 6 extra scene
+        // renders for ONE shadow-casting point light.
+        for (uint32_t face = 0; face < 6; ++face)
+        {
+            m_PointShadow.BeginDepthPass(face);
+            m_DepthCubeShader->Bind();
+            m_DepthCubeShader->SetMat4("u_LightSpaceMatrix", m_PointShadow.GetLightSpaceMatrix(face));
+            m_DepthCubeShader->SetFloat3("u_LightPos", m_WarmLightPos);
+            m_DepthCubeShader->SetFloat("u_FarPlane", m_PointShadow.GetFarPlane());
+            RenderScene(m_DepthCubeShader, true);
+            m_PointShadow.EndDepthPass();
+        }
+
+        // --- Pass 3: lighting ------------------------------------------------
         Ref<Shader> shader = m_ActiveShader;
         shader->Bind();
         m_Lights->UploadToShader(*shader);
         shader->SetFloat3("u_CamPos", m_Camera.GetPosition());
         shader->SetMat4("u_ViewProjection", m_Camera.GetViewProjectionMatrix());
         if (shader == m_PhongShader)
-            shader->SetFloat("u_Shininess", 32.0f); // Phong-only uniform; the PBR shader has no such name
-                                                   // (setting it anyway would only log a warning — the
-                                                   // location cache turns unknown names into no-ops)
+            shader->SetFloat("u_Shininess", 32.0f); // Phong-only uniform
 
-        // Three cubes, three materials, slow Y spin. Same mesh, same lights —
-        // only u_Model / u_NormalMatrix / material change per draw.
+        // Shadow maps on slots 2/3 (0 = mesh texture, 1 = material albedo map).
+        // Phong ignores these uniforms (it has no shadow code) — the V toggle
+        // is a PBR-path feature, which is honest: shadows are a PBR-era effect.
+        if (shader == m_PBRShader)
+        {
+            shader->SetMat4("u_LightSpaceMatrix", m_DirShadow.GetLightSpaceMatrix());
+            shader->SetInt("u_DirShadowMap", 2);
+            shader->SetInt("u_PointShadowMap", 3);
+            shader->SetFloat3("u_PointLightPos", m_WarmLightPos);
+            shader->SetFloat("u_FarPlane", m_PointShadow.GetFarPlane());
+            shader->SetInt("u_ShadowsEnabled", m_ShadowsEnabled ? 1 : 0);
+            m_DirShadow.BindDepthTexture(2);
+            m_PointShadow.BindDepthTexture(3);
+        }
+
+        RenderScene(shader, false);
+    }
+
+    void OnWindowResize(uint32_t width, uint32_t height) override
+    {
+        m_Camera.SetAspectRatio(static_cast<float>(width) / static_cast<float>(height));
+        m_DirShadow.SetViewportSize(width, height);
+        m_PointShadow.SetViewportSize(width, height);
+    }
+
+private:
+    // One scene, three passes. depthPass = true: only u_Model is set (depth
+    // shaders don't take normals or materials). depthPass = false: full
+    // lighting uniforms + material per object.
+    void RenderScene(const Pink::Ref<Pink::Shader>& shader, bool depthPass)
+    {
+        using namespace Pink;
+
+        // Floor first (identity model), then the three spinning cubes.
+        {
+            Mat4 model = Mat4::Identity();
+            shader->SetMat4("u_Model", model);
+            if (!depthPass)
+            {
+                shader->SetMat4("u_NormalMatrix", MakeNormalMatrix(model));
+                m_FloorMaterial.Bind(*shader);
+            }
+            Renderer::Submit(shader, m_FloorVertexArray);
+        }
+
         const float xs[3] = { -2.2f, 0.0f, 2.2f };
         for (int i = 0; i < 3; ++i)
         {
             Mat4 model = Translate(Vec3{ xs[i], 0.0f, 0.0f })
                        * Rotate(m_Time * 0.5f, Vec3{ 0.0f, 1.0f, 0.0f });
             shader->SetMat4("u_Model", model);
-            shader->SetMat4("u_NormalMatrix", MakeNormalMatrix(model));
-            m_Materials[i].Bind(*shader);
+            if (!depthPass)
+            {
+                shader->SetMat4("u_NormalMatrix", MakeNormalMatrix(model));
+                m_Materials[i].Bind(*shader);
+            }
             Renderer::Submit(shader, m_VertexArray);
         }
     }
 
-    void OnWindowResize(uint32_t width, uint32_t height) override
-    {
-        m_Camera.SetAspectRatio(static_cast<float>(width) / static_cast<float>(height));
-    }
-
-private:
     void AimCamera()
     {
         using namespace Pink;
@@ -267,24 +357,37 @@ private:
     Pink::Ref<Pink::Shader> m_PhongShader;
     Pink::Ref<Pink::Shader> m_PBRShader;
     Pink::Ref<Pink::Shader> m_ActiveShader;
+    Pink::Ref<Pink::Shader> m_DepthShader;
+    Pink::Ref<Pink::Shader> m_DepthCubeShader;
     Pink::Ref<Pink::VertexBuffer> m_VertexBuffer;
     Pink::Ref<Pink::IndexBuffer> m_IndexBuffer;
     Pink::Ref<Pink::VertexArray> m_VertexArray;
+    Pink::Ref<Pink::VertexBuffer> m_FloorVertexBuffer;
+    Pink::Ref<Pink::IndexBuffer> m_FloorIndexBuffer;
+    Pink::Ref<Pink::VertexArray> m_FloorVertexArray;
 
     Pink::LightManager* m_Lights = nullptr; // owned by the Application (subsystem)
     std::vector<Pink::Material> m_Materials;
+    Pink::Material m_FloorMaterial;
+
+    // Lesson 13: the shadow maps.
+    Pink::DirectionalShadowMap m_DirShadow{ 2048 };
+    Pink::PointShadowMap m_PointShadow{ 1024, 25.0f };
+    Pink::Vec3 m_WarmLightPos{ 0.0f, 0.0f, 0.0f };
+    bool m_ShadowsEnabled = true;
+    bool m_VWasPressed = false;
 
     Pink::PerspectiveCamera m_Camera{ 45.0f, 1280.0f / 720.0f, 0.1f, 100.0f };
     Pink::Vec3 m_Target{ 0.0f, 0.0f, 0.0f };
     float m_Yaw = Pink::Radians(45.0f);
     float m_Pitch = Pink::Radians(-20.0f);
-    float m_Distance = 6.0f; // widened: three cubes now
+    float m_Distance = 8.0f; // widened: the floor is 20 units across
 
     bool m_Dragging = false;
     float m_LastMouseX = 0.0f, m_LastMouseY = 0.0f;
     float m_Time = 0.0f;
 
-    // Hot-reload bookkeeping (Lesson 8), one set per shader.
+    // Hot-reload bookkeeping (Lesson 8), one set per lighting shader.
     std::string m_PhongPath, m_PBRPath;
     std::filesystem::file_time_type m_PhongWriteTime, m_PBRWriteTime;
     float m_ReloadTimer = 0.0f;

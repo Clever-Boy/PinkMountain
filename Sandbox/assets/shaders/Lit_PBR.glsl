@@ -24,10 +24,12 @@ layout(location = 2) in vec2 a_TexCoord;
 uniform mat4 u_ViewProjection;
 uniform mat4 u_Model;
 uniform mat4 u_NormalMatrix;
+uniform mat4 u_LightSpaceMatrix; // Lesson 13: directional light's clip space
 
 out vec3 v_WorldPos;
 out vec3 v_Normal;
 out vec2 v_TexCoord;
+out vec4 v_FragPosLightSpace; // Lesson 13: world pos in light clip space (vec4 — the divide needs w)
 
 void main()
 {
@@ -35,6 +37,7 @@ void main()
     v_WorldPos = worldPos.xyz;
     v_Normal = mat3(u_NormalMatrix) * a_Normal;
     v_TexCoord = a_TexCoord;
+    v_FragPosLightSpace = u_LightSpaceMatrix * worldPos;
     gl_Position = u_ViewProjection * worldPos;
 }
 
@@ -46,6 +49,7 @@ layout(location = 0) out vec4 color;
 in vec3 v_WorldPos;
 in vec3 v_Normal;
 in vec2 v_TexCoord;
+in vec4 v_FragPosLightSpace; // Lesson 13
 
 struct DirectionalLight { vec3 Direction; vec3 Color; float Intensity; };
 struct PointLight { vec3 Position; vec3 Color; float Intensity; float Range; };
@@ -69,6 +73,14 @@ uniform vec3 u_Albedo;
 uniform float u_Metallic;
 uniform float u_Roughness; // already clamped to [0.05, 1] by Material::Bind
 uniform float u_AO;
+
+// Lesson 13: shadow uniforms. Slots 2/3 are the shadow-map convention in the
+// demo (0 = mesh texture, 1 = material albedo map).
+uniform sampler2D u_DirShadowMap;
+uniform samplerCube u_PointShadowMap;
+uniform vec3 u_PointLightPos; // the ONE shadow-casting point light (index 0)
+uniform float u_FarPlane;     // point cubemap far plane (linear-depth scale)
+uniform int u_ShadowsEnabled; // key V: 1 = shadows, 0 = A/B comparison off
 
 const float PI = 3.14159265359;
 
@@ -133,6 +145,72 @@ float PointAttenuation(vec3 lightPos, float range)
     return atten;
 }
 
+// --- Lesson 13: shadow tests ----------------------------------------------
+// Both return 0.0 (lit) .. 1.0 (fully shadowed). The caller multiplies the
+// DIRECT term only — ambient stays untouched, so shadowed areas are dim,
+// not pitch black.
+
+float ShadowCalculation(vec4 fragPosLightSpace, vec3 N, vec3 L)
+{
+    // Perspective divide + [-1,1] -> [0,1] remap into texture space.
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    // Outside the light's frustum? Not covered by the map = lit.
+    if (projCoords.z > 1.0)
+        return 0.0;
+
+    float currentDepth = projCoords.z;
+    // Slope-scaled bias: acne lives on surfaces angled away from the light
+    // (their depth slope across a texel is steep), so bias grows there.
+    // The floor value stops flat surfaces from detaching (peter-panning).
+    float bias = max(0.05 * (1.0 - dot(N, L)), 0.005);
+
+    // 3x3 PCF: average 9 taps instead of one hard comparison. The blocky
+    // shadow edge becomes a soft 1-texel gradient — the cheapest antialiasing
+    // in graphics.
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(u_DirShadowMap, 0);
+    for (int x = -1; x <= 1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            float closestDepth = texture(u_DirShadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        }
+    }
+    return shadow / 9.0;
+}
+
+// 20-tap disk PCF for the point cubemap. The sample direction is the
+// fragment-to-light vector plus a disk offset; the radius grows with view
+// distance so distant shadows soften (mimicking a larger penumbra).
+vec3 sampleOffsetDirections[20] = vec3[]
+(
+    vec3( 1,  1,  1), vec3( 1, -1,  1), vec3(-1, -1,  1), vec3(-1,  1,  1),
+    vec3( 1,  1, -1), vec3( 1, -1, -1), vec3(-1, -1, -1), vec3(-1,  1, -1),
+    vec3( 1,  1,  0), vec3( 1, -1,  0), vec3(-1, -1,  0), vec3(-1,  1,  0),
+    vec3( 1,  0,  1), vec3(-1,  0,  1), vec3( 1,  0, -1), vec3(-1,  0, -1),
+    vec3( 0,  1,  1), vec3( 0, -1,  1), vec3( 0, -1, -1), vec3( 0,  1, -1)
+);
+
+float PointShadowCalculation(vec3 fragPos, vec3 lightPos)
+{
+    vec3 fragToLight = fragPos - lightPos;
+    float currentDepth = length(fragToLight);
+    float viewDistance = length(u_CamPos - fragPos);
+    float diskRadius = (1.0 + (viewDistance / u_FarPlane)) / 25.0;
+
+    float shadow = 0.0;
+    for (int i = 0; i < 20; i++)
+    {
+        // Stored depth is normalized (dist/far) — scale it back to world units.
+        float closestDepth = texture(u_PointShadowMap, fragToLight + sampleOffsetDirections[i] * diskRadius).r;
+        closestDepth *= u_FarPlane;
+        shadow += currentDepth - 0.05 > closestDepth ? 1.0 : 0.0;
+    }
+    return shadow / 20.0;
+}
+
 void main()
 {
     vec3 N = normalize(v_Normal);
@@ -141,19 +219,28 @@ void main()
 
     vec3 Lo = vec3(0.0);
 
-    // Sun
+    // Shadow factors (V toggle): 0 when disabled, so (1.0 - shadow) = 1.
+    float dirShadow = 0.0, pointShadow = 0.0;
+    if (u_ShadowsEnabled == 1)
+    {
+        dirShadow = ShadowCalculation(v_FragPosLightSpace, N, normalize(-u_DirLight.Direction));
+        pointShadow = PointShadowCalculation(v_WorldPos, u_PointLightPos);
+    }
+
+    // Sun — shadowed by the directional map.
     {
         vec3 L = normalize(-u_DirLight.Direction);
         vec3 radiance = u_DirLight.Color * u_DirLight.Intensity;
-        Lo += CalcLight(L, radiance, N, V, albedo, u_Metallic, u_Roughness);
+        Lo += CalcLight(L, radiance, N, V, albedo, u_Metallic, u_Roughness) * (1.0 - dirShadow);
     }
-    // Points
+    // Points — only light 0 casts (the warm practical); the rest are unshadowed.
     for (int i = 0; i < u_NumPointLights; i++)
     {
         PointLight light = u_PointLights[i];
         vec3 L = normalize(light.Position - v_WorldPos);
         vec3 radiance = light.Color * light.Intensity * PointAttenuation(light.Position, light.Range);
-        Lo += CalcLight(L, radiance, N, V, albedo, u_Metallic, u_Roughness);
+        float shadow = (i == 0) ? pointShadow : 0.0;
+        Lo += CalcLight(L, radiance, N, V, albedo, u_Metallic, u_Roughness) * (1.0 - shadow);
     }
     // Spots: declared, not uploaded — the build task.
 

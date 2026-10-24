@@ -21,6 +21,7 @@ public:
     static void Shutdown();
 
     static void BeginFrame(const Vec4& clearColor); // SetClearColor + Clear
+    static void Clear(); // color + depth, on the currently bound target (depth passes need this too)
     static void OnWindowResize(uint32_t width, uint32_t height);
 
     // Lesson 9: the one call game code makes per drawable — bind the

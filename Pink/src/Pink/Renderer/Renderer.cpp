@@ -25,6 +25,11 @@ void Renderer::BeginFrame(const Vec4& clearColor)
     s_RendererAPI->Clear();
 }
 
+void Renderer::Clear()
+{
+    s_RendererAPI->Clear();
+}
+
 void Renderer::OnWindowResize(uint32_t width, uint32_t height)
 {
     // Minimized windows report 0 — glViewport(0,0,0,0) is legal but
