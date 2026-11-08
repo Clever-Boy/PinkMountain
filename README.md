@@ -4,12 +4,14 @@ A modern 3D game engine in **C++20**, built lesson-by-lesson as a learning proje
 Every system is written from scratch and commented with the *why* behind each design
 decision — the goal is understanding, not just a working renderer.
 
-> Status: Lessons 1–14 complete. The engine opens a window, compiles GLSL shaders
+> Status: Lessons 1–15 complete. The engine opens a window, compiles GLSL shaders
 > with hot-reload, and renders three lit cubes on a shadowed floor in HDR —
 > with bloom, exposure, and filmic tone mapping — through an API-agnostic
 > renderer seam (OpenGL backend): cameras (Lesson 11), forward lighting with
 > Blinn-Phong and PBR Cook-Torrance (Lesson 12), shadow mapping (Lesson 13),
-> and post-processing (Lesson 14).
+> post-processing (Lesson 14), and an asset pipeline — virtual file system,
+> asset handles, async loading, hot reload, and real OBJ mesh loading
+> (Lesson 15).
 
 ## What's inside (by lesson)
 
@@ -29,6 +31,7 @@ decision — the goal is understanding, not just a working renderer.
 | 12 | Lighting: forward rendering, Blinn-Phong → PBR Cook-Torrance (GGX/Schlick) | `Pink/Renderer/Light.h`, `Material.h`, `LightManager.h`, `Sandbox/assets/shaders/Lit_Phong.glsl`, `Lit_PBR.glsl` |
 | 13 | Shadows: shadow mapping (directional + point cubemap), PCF, slope-scaled bias | `Pink/Renderer/Framebuffer.h`, `Renderer/ShadowMap.h`, `Renderer/OpenGL/OpenGLFramebuffer.*`, `Sandbox/assets/shaders/Depth.glsl`, `DepthCube.glsl` |
 | 14 | Post-processing: HDR (RGBA16F), bloom (separable Gaussian ping-pong), tone mapping (Reinhard/Exponential/ACES), gamma | `Pink/Renderer/PostProcess.h`, `Renderer/Framebuffer.h` (multi-attachment spec), `Sandbox/assets/shaders/Blur.glsl`, `Composite.glsl` |
+| 15 | Asset pipeline: VFS mount points, asset handles (FNV-1a), async loading (CPU/GPU split), hot reload, OBJ loader | `Pink/Core/VirtualFileSystem.h`, `Pink/Asset/Asset.h`, `AssetManager.h`, `Asset/TextureAsset.h`, `Pink/Renderer/Mesh.h`, `Sandbox/assets/models/cube.obj`, `Sandbox/assets/textures/checker.ppm` |
 
 ## Prerequisites
 
@@ -104,10 +107,10 @@ namespace PM = Pink; // your files, your choice — the engine doesn't care
 
 ## Roadmap
 
-- Lesson 15: Asset pipeline — virtual file system, asset handles/IDs, async
-  loading, hot reload (and real OBJ mesh loading — no more procedural cubes)
-- Then: ECS scene, ImGui editor, physics, audio, Lua scripting, animation,
-  particles, job system, Tracy profiling, capstone demo scene.
+- Lesson 16: Scene — entity-component-system from scratch (archetypes or
+  sparse sets, scene graph vs ECS, transform hierarchy)
+- Then: ImGui editor, physics, audio, Lua scripting, animation, particles,
+  job system, Tracy profiling, capstone demo scene.
 
 ## Acknowledgments
 

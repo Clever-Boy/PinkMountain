@@ -62,9 +62,11 @@ uniform int u_NumSpotLights;
 
 uniform vec3 u_CamPos;
 uniform vec3 u_Albedo;
+uniform sampler2D u_AlbedoMap; // Lesson 15: slot 1 (Material::Bind)
+uniform int u_HasAlbedoMap;    // 0 = flat Albedo, 1 = map * Albedo
 uniform float u_Shininess; // Phong exponent. PBR uses roughness instead.
 
-vec3 CalcPointLight(PointLight light, vec3 N, vec3 V)
+vec3 CalcPointLight(PointLight light, vec3 N, vec3 V, vec3 albedo)
 {
     vec3 L = light.Position - v_WorldPos;
     float d = length(L);
@@ -82,7 +84,7 @@ vec3 CalcPointLight(PointLight light, vec3 N, vec3 V)
     // NOTE: spec is not tinted by albedo — classic Phong's energy leak.
     // Watch the white highlight on the red plastic cube: that's the bug
     // PBR fixes (key 2).
-    return (diff * u_Albedo + spec * vec3(1.0)) * light.Color * light.Intensity * atten;
+    return (diff * albedo + spec * vec3(1.0)) * light.Color * light.Intensity * atten;
 }
 
 // --- Lesson 14: Unreal-style soft-knee bright extract ----------------------
@@ -104,6 +106,8 @@ void main()
 {
     vec3 N = normalize(v_Normal);
     vec3 V = normalize(u_CamPos - v_WorldPos);
+    // Lesson 15: same albedo-map rule as the PBR shader (see its comment).
+    vec3 albedo = u_HasAlbedoMap == 1 ? texture(u_AlbedoMap, v_TexCoord).rgb * u_Albedo : u_Albedo;
     vec3 result = vec3(0.0);
 
     // Sun: no attenuation — directional lights are infinitely far away.
@@ -112,18 +116,18 @@ void main()
         vec3 H = normalize(L + V);
         float diff = max(dot(N, L), 0.0);
         float spec = pow(max(dot(N, H), 0.0), u_Shininess);
-        result += (diff * u_Albedo + spec * vec3(1.0)) * u_DirLight.Color * u_DirLight.Intensity;
+        result += (diff * albedo + spec * vec3(1.0)) * u_DirLight.Color * u_DirLight.Intensity;
     }
 
     for (int i = 0; i < u_NumPointLights; i++)
-        result += CalcPointLight(u_PointLights[i], N, V);
+        result += CalcPointLight(u_PointLights[i], N, V, albedo);
 
     // Spotlights are DECLARED but not uploaded yet — that's the build task.
 
     // Ambient: a flat hack, named as one. Real ambient comes from the
     // environment (IBL, Lesson 12's stretch goal); this constant just keeps
     // shadowed faces from going pitch black.
-    result += u_Albedo * 0.05;
+    result += albedo * 0.05;
 
     // Lesson 14: the gamma stub is GONE — and the build task proves the
     // final picture is unchanged. This shader now outputs linear HDR like

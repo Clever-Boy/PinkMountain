@@ -1,17 +1,25 @@
-// SandboxApp.cpp — the demo client (Lessons 2–14).
+// SandboxApp.cpp — the demo client (Lessons 2–15).
 // The engine owns main() (see Core/EntryPoint.h); this file only describes
 // the application: its window spec, its subsystems, and its per-frame hooks.
 //
-// Current state (Lesson 14): three lit cubes on a floor, with shadows,
+// Current state (Lesson 15): three lit cubes on a floor, with shadows,
 // rendered in HDR and post-processed — bloom, exposure, tone mapping
 // (Reinhard / Exponential / ACES), gamma. Key 1 = Blinn-Phong, key 2 = PBR.
 // Key V toggles shadows, B toggles bloom, T cycles the tone-map operator,
 // [ and ] step exposure ∓0.25 EV.
+//
+// Lesson 15: the cubes are no longer procedural — they are loaded from
+// assets/models/cube.obj through the AssetManager (VFS logical paths),
+// and a checkerboard texture loads ASYNCHRONOUSLY onto the gold cube.
+// Edit cube.obj while the app runs: the watcher hot-reloads the mesh.
 
 #include "Pink/Core/EntryPoint.h" // pulls in Application + Log + main()
 
 #include "Pink/Platform/KeyCodes.h"
 #include "Pink/Platform/Input.h"
+#include "Pink/Core/VirtualFileSystem.h"
+#include "Pink/Asset/AssetManager.h"
+#include "Pink/Renderer/Mesh.h"
 #include "Pink/Renderer/Renderer.h"
 #include "Pink/Renderer/Shader.h"
 #include "Pink/Renderer/Buffer.h"
@@ -52,9 +60,17 @@ class SandboxApp : public Pink::Application
 public:
     SandboxApp()
     {
+        // Lesson 15: the VFS is mounted before ANY subsystem initializes
+        // — the AssetManager's watcher and every loader resolve through
+        // it. "assets" is the logical root; the physical root is the
+        // Sandbox asset directory (relative to the project root, i.e.
+        // run the exe from the repo root, as the README instructs).
+        VirtualFileSystem::Mount("assets", "Sandbox/assets");
+
         AddSubsystem<Pink::MemoryService>();
         m_Lights = &AddSubsystem<Pink::LightManager>();
         m_PostProcess = &AddSubsystem<Pink::PostProcess>();
+        m_Assets = &AddSubsystem<Pink::AssetManager>();
     }
 
 protected:
@@ -71,54 +87,46 @@ protected:
     {
         using namespace Pink;
 
-        // Cube mesh (Lesson 12, unchanged): 24 vertices, pos3/normal3/uv2,
-        // Lesson-11 verified CCW winding, per-face normals.
-        struct Face { float nx, ny, nz; float px[4][3]; };
-        const Face faces[6] = {
-            { 1, 0, 0,  {{ 0.5f,-0.5f, 0.5f},{ 0.5f,-0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f, 0.5f}} }, // +X
-            {-1, 0, 0,  {{-0.5f,-0.5f,-0.5f},{-0.5f,-0.5f, 0.5f},{-0.5f, 0.5f, 0.5f},{-0.5f, 0.5f,-0.5f}} }, // -X
-            { 0, 1, 0,  {{-0.5f, 0.5f, 0.5f},{ 0.5f, 0.5f, 0.5f},{ 0.5f, 0.5f,-0.5f},{-0.5f, 0.5f,-0.5f}} }, // +Y
-            { 0,-1, 0,  {{-0.5f,-0.5f,-0.5f},{ 0.5f,-0.5f,-0.5f},{ 0.5f,-0.5f, 0.5f},{-0.5f,-0.5f, 0.5f}} }, // -Y
-            { 0, 0, 1,  {{-0.5f,-0.5f, 0.5f},{ 0.5f,-0.5f, 0.5f},{ 0.5f, 0.5f, 0.5f},{-0.5f, 0.5f, 0.5f}} }, // +Z
-            { 0, 0,-1,  {{ 0.5f,-0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},{-0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f}} }, // -Z
-        };
-        const float faceUV[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
-
-        std::vector<float> vertices;
-        vertices.reserve(24 * 8);
-        for (const auto& f : faces)
-            for (int v = 0; v < 4; ++v)
-            {
-                vertices.push_back(f.px[v][0]);
-                vertices.push_back(f.px[v][1]);
-                vertices.push_back(f.px[v][2]);
-                vertices.push_back(f.nx);
-                vertices.push_back(f.ny);
-                vertices.push_back(f.nz);
-                vertices.push_back(faceUV[v][0]);
-                vertices.push_back(faceUV[v][1]);
-            }
-
-        m_VertexBuffer = VertexBuffer::Create(vertices.data(), (uint32_t)(vertices.size() * sizeof(float)));
-        BufferLayout layout = {
-            { ShaderDataType::Float3, "a_Position" },
-            { ShaderDataType::Float3, "a_Normal" },
-            { ShaderDataType::Float2, "a_TexCoord" }
-        };
-        m_VertexBuffer->SetLayout(layout); // BEFORE AddVertexBuffer — the Lesson 9 invariant
-
-        m_VertexArray = VertexArray::Create();
-        m_VertexArray->AddVertexBuffer(m_VertexBuffer);
-
-        uint32_t indices[36];
-        for (uint32_t face = 0; face < 6; ++face)
+        // --- Lesson 15: the cube, loaded from disk --------------------------
+        // The 24-vertex procedural cube from Lessons 11–14 is now a file:
+        // assets/models/cube.obj. Same CCW winding, same per-face normals,
+        // same UVs — the mesh that comes back should be byte-identical in
+        // spirit to the one this code used to build by hand. Load() is
+        // SYNCHRONOUS here on purpose: this is level load, the one place
+        // a stall is acceptable (the screen is still black). The async
+        // texture below is the contrast case.
+        m_CubeMesh = m_Assets->Load<Mesh>("assets/models/cube.obj");
+        PM_CORE_ASSERT(m_CubeMesh, "Sandbox: failed to load assets/models/cube.obj");
+        PM_CORE_ASSERT(m_CubeMesh->GetVertexCount() == 24 && m_CubeMesh->GetIndexCount() == 36,
+                       "Sandbox: cube.obj should dedupe to 24 verts / 36 indices");
         {
-            uint32_t b = face * 4, o = face * 6;
-            indices[o + 0] = b + 0; indices[o + 1] = b + 1; indices[o + 2] = b + 2;
-            indices[o + 3] = b + 2; indices[o + 4] = b + 3; indices[o + 5] = b + 0;
+            Vec3 mn, mx;
+            m_CubeMesh->ComputeBounds(mn, mx);
+            PM_INFO("Cube bounds: min ({}, {}, {}) max ({}, {}, {})", mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
         }
-        m_IndexBuffer = IndexBuffer::Create(indices, 36);
-        m_VertexArray->SetIndexBuffer(m_IndexBuffer);
+
+        // --- Lesson 15: async texture ----------------------------------------
+        // The checkerboard loads on a WORKER thread (decode) and uploads
+        // on the MAIN thread (AssetManager's completion queue). The frame
+        // never waits for it: the gold cube renders with its flat albedo
+        // until the callback fires and swaps in the map. Try it: the
+        // texture appears a frame or two after startup, with no hitch.
+        m_Assets->LoadTextureAsync("assets/textures/checker.ppm",
+            [this](Ref<Asset> asset)
+            {
+                auto tex = std::dynamic_pointer_cast<TextureAsset>(asset);
+                if (!tex)
+                {
+                    PM_CORE_ERROR("Sandbox: async texture load failed — gold cube stays flat");
+                    return;
+                }
+                // m_Materials[2] is the gold cube (built below); the
+                // callback runs on the main thread during OnUpdate, so
+                // touching the material here is safe.
+                m_Materials[2].AlbedoMap = tex->GetTexture();
+                PM_INFO("Sandbox: checker texture arrived ({}x{}), applied to gold cube",
+                        tex->GetWidth(), tex->GetHeight());
+            });
 
         // --- Lesson 13: the floor (shadow receiver) -------------------------
         // A 20x20 plane at y = -0.5 (the cubes' bottom faces sit exactly on
@@ -130,6 +138,11 @@ protected:
              10.0f, -0.5f,  10.0f,   0.0f, 1.0f, 0.0f,   1.0f, 1.0f,
             -10.0f, -0.5f,  10.0f,   0.0f, 1.0f, 0.0f,   0.0f, 1.0f,
         };
+        BufferLayout layout = {
+            { ShaderDataType::Float3, "a_Position" },
+            { ShaderDataType::Float3, "a_Normal" },
+            { ShaderDataType::Float2, "a_TexCoord" }
+        }; // same pos3/normal3/uv2 layout the OBJ loader produces
         m_FloorVertexBuffer = VertexBuffer::Create(floorVerts, sizeof(floorVerts));
         m_FloorVertexBuffer->SetLayout(layout);
         m_FloorVertexArray = VertexArray::Create();
@@ -139,8 +152,16 @@ protected:
         m_FloorVertexArray->SetIndexBuffer(m_FloorIndexBuffer);
 
         // The two lighting shaders. Key 1 = Phong, key 2 = PBR.
-        m_PhongPath = "assets/shaders/Lit_Phong.glsl";
-        m_PBRPath = "assets/shaders/Lit_PBR.glsl";
+        // Lesson 15: paths resolve through the VFS — the same logical
+        // paths ("assets/shaders/...") work from any working directory
+        // that has the mount; the fallback keeps the old relative path
+        // if the mount is missing (defensive, logs a VFS warning).
+        auto resolveOr = [](const std::string& logical) {
+            return VirtualFileSystem::Resolve(logical)
+                .value_or(std::filesystem::path(logical)).string();
+        };
+        m_PhongPath = resolveOr("assets/shaders/Lit_Phong.glsl");
+        m_PBRPath = resolveOr("assets/shaders/Lit_PBR.glsl");
         m_PhongShader = Shader::Create(m_PhongPath);
         m_PBRShader = Shader::Create(m_PBRPath);
         m_PhongWriteTime = std::filesystem::last_write_time(m_PhongPath);
@@ -371,7 +392,7 @@ private:
                 shader->SetMat4("u_NormalMatrix", MakeNormalMatrix(model));
                 m_Materials[i].Bind(*shader);
             }
-            Renderer::Submit(shader, m_VertexArray);
+            Renderer::Submit(shader, m_CubeMesh->GetVertexArray());
         }
     }
 
@@ -405,15 +426,14 @@ private:
     Pink::Ref<Pink::Shader> m_ActiveShader;
     Pink::Ref<Pink::Shader> m_DepthShader;
     Pink::Ref<Pink::Shader> m_DepthCubeShader;
-    Pink::Ref<Pink::VertexBuffer> m_VertexBuffer;
-    Pink::Ref<Pink::IndexBuffer> m_IndexBuffer;
-    Pink::Ref<Pink::VertexArray> m_VertexArray;
+    Pink::Ref<Pink::Mesh> m_CubeMesh; // Lesson 15: loaded from cube.obj
     Pink::Ref<Pink::VertexBuffer> m_FloorVertexBuffer;
     Pink::Ref<Pink::IndexBuffer> m_FloorIndexBuffer;
     Pink::Ref<Pink::VertexArray> m_FloorVertexArray;
 
     Pink::LightManager* m_Lights = nullptr; // owned by the Application (subsystem)
     Pink::PostProcess* m_PostProcess = nullptr; // Lesson 14 (subsystem)
+    Pink::AssetManager* m_Assets = nullptr; // Lesson 15 (subsystem)
     std::vector<Pink::Material> m_Materials;
     Pink::Material m_FloorMaterial;
 

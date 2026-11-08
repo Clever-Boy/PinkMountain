@@ -71,6 +71,8 @@ uniform int u_NumSpotLights;
 
 uniform vec3 u_CamPos;
 uniform vec3 u_Albedo;
+uniform sampler2D u_AlbedoMap; // Lesson 15: slot 1 (Material::Bind)
+uniform int u_HasAlbedoMap;    // 0 = flat Albedo, 1 = map * Albedo
 uniform float u_Metallic;
 uniform float u_Roughness; // already clamped to [0.05, 1] by Material::Bind
 uniform float u_AO;
@@ -234,7 +236,11 @@ void main()
 {
     vec3 N = normalize(v_Normal);
     vec3 V = normalize(u_CamPos - v_WorldPos);
-    vec3 albedo = u_Albedo;
+    // Lesson 15: the albedo map (async-loaded checker on the gold cube)
+    // multiplies the flat albedo. The checker is black/white, so treating
+    // its texels as linear is exact; a colored sRGB texture would want a
+    // proper sRGB decode (a later texture lesson).
+    vec3 albedo = u_HasAlbedoMap == 1 ? texture(u_AlbedoMap, v_TexCoord).rgb * u_Albedo : u_Albedo;
 
     vec3 Lo = vec3(0.0);
 
