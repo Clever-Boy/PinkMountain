@@ -4,11 +4,12 @@ A modern 3D game engine in **C++20**, built lesson-by-lesson as a learning proje
 Every system is written from scratch and commented with the *why* behind each design
 decision — the goal is understanding, not just a working renderer.
 
-> Status: Lessons 1–13 complete. The engine opens a window, compiles GLSL shaders
-> with hot-reload, and renders three lit cubes on a shadowed floor through an
-> API-agnostic renderer seam (OpenGL backend): cameras (Lesson 11), forward
-> lighting with Blinn-Phong and PBR Cook-Torrance (Lesson 12), and shadow
-> mapping — directional + point-light cubemaps (Lesson 13).
+> Status: Lessons 1–14 complete. The engine opens a window, compiles GLSL shaders
+> with hot-reload, and renders three lit cubes on a shadowed floor in HDR —
+> with bloom, exposure, and filmic tone mapping — through an API-agnostic
+> renderer seam (OpenGL backend): cameras (Lesson 11), forward lighting with
+> Blinn-Phong and PBR Cook-Torrance (Lesson 12), shadow mapping (Lesson 13),
+> and post-processing (Lesson 14).
 
 ## What's inside (by lesson)
 
@@ -27,6 +28,7 @@ decision — the goal is understanding, not just a working renderer.
 | 11 | Cameras: perspective/orthographic, orbit controller, resize handling | `Pink/Renderer/Camera.h`, `Renderer/Camera.cpp`, `SandboxApp` orbit + scroll zoom |
 | 12 | Lighting: forward rendering, Blinn-Phong → PBR Cook-Torrance (GGX/Schlick) | `Pink/Renderer/Light.h`, `Material.h`, `LightManager.h`, `Sandbox/assets/shaders/Lit_Phong.glsl`, `Lit_PBR.glsl` |
 | 13 | Shadows: shadow mapping (directional + point cubemap), PCF, slope-scaled bias | `Pink/Renderer/Framebuffer.h`, `Renderer/ShadowMap.h`, `Renderer/OpenGL/OpenGLFramebuffer.*`, `Sandbox/assets/shaders/Depth.glsl`, `DepthCube.glsl` |
+| 14 | Post-processing: HDR (RGBA16F), bloom (separable Gaussian ping-pong), tone mapping (Reinhard/Exponential/ACES), gamma | `Pink/Renderer/PostProcess.h`, `Renderer/Framebuffer.h` (multi-attachment spec), `Sandbox/assets/shaders/Blur.glsl`, `Composite.glsl` |
 
 ## Prerequisites
 
@@ -59,7 +61,9 @@ The console logs the active renderer backend plus the GPU vendor/renderer/
 version string.
 **Esc** quits; drag with the mouse to orbit, scroll to zoom (Lesson 11).
 **1** selects Blinn-Phong, **2** selects PBR (Lesson 12); **V** toggles
-shadows for A/B comparison (Lesson 13). Edit `Sandbox/assets/shaders/*.glsl`
+shadows (Lesson 13); **B** toggles bloom, **T** cycles the tone-map operator
+(Reinhard → Exponential → ACES), **[** and **]** step exposure ∓0.25 EV
+(Lesson 14). Edit `Sandbox/assets/shaders/*.glsl`
 while the app runs — shaders hot-reload without restarting (Lesson 8).
 
 ## Project structure
@@ -100,9 +104,10 @@ namespace PM = Pink; // your files, your choice — the engine doesn't care
 
 ## Roadmap
 
-- Lesson 14: Post-processing — HDR, tone mapping, bloom (reuses the Lesson 13 Framebuffer)
-- Then: ECS scene, asset pipeline, ImGui editor, physics, audio, Lua scripting,
-  animation, particles, job system, Tracy profiling, capstone demo scene.
+- Lesson 15: Asset pipeline — virtual file system, asset handles/IDs, async
+  loading, hot reload (and real OBJ mesh loading — no more procedural cubes)
+- Then: ECS scene, ImGui editor, physics, audio, Lua scripting, animation,
+  particles, job system, Tracy profiling, capstone demo scene.
 
 ## Acknowledgments
 

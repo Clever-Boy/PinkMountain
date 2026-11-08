@@ -37,6 +37,12 @@ public:
     virtual void SetClearColor(const Vec4& color) = 0;
     virtual void Clear() = 0;
 
+    // Lesson 14: post-processing passes are 2D fullscreen quads — depth
+    // testing them against a cleared depth buffer is harmless but pointless
+    // (and on tiled GPUs, pointless depth work still costs). The seam grows
+    // one function; every backend implements it trivially.
+    virtual void SetDepthTest(bool enabled) = 0;
+
     // Lesson 9: real now. The VAO carries the index buffer, so the default
     // draws the whole mesh; pass indexCount to draw a prefix of it.
     virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0) = 0;

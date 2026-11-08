@@ -1,10 +1,12 @@
-// SandboxApp.cpp — the demo client (Lessons 2–13).
+// SandboxApp.cpp — the demo client (Lessons 2–14).
 // The engine owns main() (see Core/EntryPoint.h); this file only describes
 // the application: its window spec, its subsystems, and its per-frame hooks.
 //
-// Current state (Lesson 13): three lit cubes on a floor, with shadows. One
-// directional (sun) shadow map + one point-light cubemap shadow. Key 1 =
-// Blinn-Phong, key 2 = PBR. Key V toggles shadows for A/B comparison.
+// Current state (Lesson 14): three lit cubes on a floor, with shadows,
+// rendered in HDR and post-processed — bloom, exposure, tone mapping
+// (Reinhard / Exponential / ACES), gamma. Key 1 = Blinn-Phong, key 2 = PBR.
+// Key V toggles shadows, B toggles bloom, T cycles the tone-map operator,
+// [ and ] step exposure ∓0.25 EV.
 
 #include "Pink/Core/EntryPoint.h" // pulls in Application + Log + main()
 
@@ -20,6 +22,7 @@
 #include "Pink/Renderer/Material.h"
 #include "Pink/Renderer/LightManager.h"
 #include "Pink/Renderer/ShadowMap.h"
+#include "Pink/Renderer/PostProcess.h"
 #include "Pink/Memory/MemoryService.h"
 
 #include <algorithm> // std::clamp
@@ -51,6 +54,7 @@ public:
     {
         AddSubsystem<Pink::MemoryService>();
         m_Lights = &AddSubsystem<Pink::LightManager>();
+        m_PostProcess = &AddSubsystem<Pink::PostProcess>();
     }
 
 protected:
@@ -177,6 +181,9 @@ protected:
         m_Materials.push_back({ Vec3(1.00f, 0.71f, 0.29f) , 1.0f, 0.25f }); // gold
         m_FloorMaterial = { Vec3{ 0.5f, 0.5f, 0.5f }, 0.0f, 0.9f };          // matte gray floor
 
+        // Lesson 14: the post chain owns the HDR target from here on.
+        m_PostProcess->Init(1280, 720);
+
         AimCamera();
     }
 
@@ -198,6 +205,32 @@ protected:
         if (vPressed && !m_VWasPressed)
             m_ShadowsEnabled = !m_ShadowsEnabled;
         m_VWasPressed = vPressed;
+
+        // Lesson 14: post controls, same edge-trigger pattern.
+        // T cycles the tone-map operator, B toggles bloom, [ ] step exposure.
+        bool tPressed = Input::IsKeyPressed(KeyCode::T);
+        if (tPressed && !m_TWasPressed)
+        {
+            int next = ((int)m_PostProcess->GetToneMapping() + 1) % 3;
+            m_PostProcess->SetToneMapping(static_cast<Pink::ToneMappingOp>(next));
+            PM_INFO("Tone mapping: {}", next == 0 ? "Reinhard" : (next == 1 ? "Exponential" : "ACES"));
+        }
+        m_TWasPressed = tPressed;
+
+        bool bPressed = Input::IsKeyPressed(KeyCode::B);
+        if (bPressed && !m_BWasPressed)
+            m_PostProcess->SetBloomEnabled(!m_PostProcess->IsBloomEnabled());
+        m_BWasPressed = bPressed;
+
+        bool lbPressed = Input::IsKeyPressed(KeyCode::LeftBracket);
+        if (lbPressed && !m_LeftBracketWasPressed)
+            m_PostProcess->SetExposure(m_PostProcess->GetExposure() - 0.25f);
+        m_LeftBracketWasPressed = lbPressed;
+
+        bool rbPressed = Input::IsKeyPressed(KeyCode::RightBracket);
+        if (rbPressed && !m_RightBracketWasPressed)
+            m_PostProcess->SetExposure(m_PostProcess->GetExposure() + 0.25f);
+        m_RightBracketWasPressed = rbPressed;
 
         // Orbit controller (Lesson 11, unchanged).
         auto [mx, my] = Input::GetMousePosition();
@@ -223,13 +256,15 @@ protected:
         AimCamera();
         m_Time += deltaTime;
 
-        // Hot reload, both lighting shaders (Lesson 8 pattern, x2).
+        // Hot reload: both lighting shaders (Lesson 8 pattern) + the two
+        // post shaders, via the PostProcess subsystem (Lesson 14).
         m_ReloadTimer += deltaTime;
         if (m_ReloadTimer >= 0.5f)
         {
             m_ReloadTimer = 0.0f;
             ReloadIfChanged(m_PhongShader, m_PhongPath, m_PhongWriteTime);
             ReloadIfChanged(m_PBRShader, m_PBRPath, m_PBRWriteTime);
+            m_PostProcess->CheckHotReload();
         }
     }
 
@@ -260,7 +295,12 @@ protected:
             m_PointShadow.EndDepthPass();
         }
 
-        // --- Pass 3: lighting ------------------------------------------------
+        // --- Pass 3: lighting → HDR target (was: straight to the screen) ----
+        // Lesson 14: the scene renders into the RGBA16F framebuffer. Nothing
+        // in the lighting code changes — it just writes linear HDR now, and
+        // the bright extract rides along via MRT.
+        m_PostProcess->BeginScenePass();
+
         Ref<Shader> shader = m_ActiveShader;
         shader->Bind();
         m_Lights->UploadToShader(*shader);
@@ -285,6 +325,11 @@ protected:
         }
 
         RenderScene(shader, false);
+        m_PostProcess->EndScenePass();
+
+        // --- Pass 4: post — bloom + tone map + gamma, to the screen --------
+        // Lesson 14: the ONLY place the display transform happens.
+        m_PostProcess->Execute();
     }
 
     void OnWindowResize(uint32_t width, uint32_t height) override
@@ -292,6 +337,7 @@ protected:
         m_Camera.SetAspectRatio(static_cast<float>(width) / static_cast<float>(height));
         m_DirShadow.SetViewportSize(width, height);
         m_PointShadow.SetViewportSize(width, height);
+        m_PostProcess->OnResize(width, height);
     }
 
 private:
@@ -367,6 +413,7 @@ private:
     Pink::Ref<Pink::VertexArray> m_FloorVertexArray;
 
     Pink::LightManager* m_Lights = nullptr; // owned by the Application (subsystem)
+    Pink::PostProcess* m_PostProcess = nullptr; // Lesson 14 (subsystem)
     std::vector<Pink::Material> m_Materials;
     Pink::Material m_FloorMaterial;
 
@@ -376,6 +423,9 @@ private:
     Pink::Vec3 m_WarmLightPos{ 0.0f, 0.0f, 0.0f };
     bool m_ShadowsEnabled = true;
     bool m_VWasPressed = false;
+    // Lesson 14: edge-trigger flags for the post controls.
+    bool m_TWasPressed = false, m_BWasPressed = false;
+    bool m_LeftBracketWasPressed = false, m_RightBracketWasPressed = false;
 
     Pink::PerspectiveCamera m_Camera{ 45.0f, 1280.0f / 720.0f, 0.1f, 100.0f };
     Pink::Vec3 m_Target{ 0.0f, 0.0f, 0.0f };

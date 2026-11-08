@@ -1,36 +1,50 @@
 #pragma once
 
-// Framebuffer.h — offscreen render targets (Lesson 13).
+// Framebuffer.h — offscreen render targets (Lessons 13–14).
 //
 // A framebuffer is "a place to render that isn't the screen": a depth texture
-// for shadow maps (this lesson), a float color texture for HDR (Lesson 14),
-// a color+depth pair for post-processing. The abstraction is deliberately
-// minimal: one spec, one target, no MRT yet (multiple render targets arrive
-// with deferred shading in the capstone).
+// for shadow maps (Lesson 13), a float color texture for HDR (this lesson).
+// Lesson 13's spec had a single bool (color on/off). Lesson 14 needs more:
+// HOW MANY color targets, and at WHAT PRECISION. Hence ColorFormats —
+// a vector, not a flag:
 //
-// Why the spec carries HasColorAttachment: a DEPTH-ONLY framebuffer (shadow
-// maps) has no color attachment at all — the driver must be told
-// glDrawBuffer(GL_NONE), or the framebuffer is incomplete. Lesson 14 flips
-// the flag on and gets an HDR color target from the same code.
+//   - empty vector      → depth-only (shadow maps; Lesson-13 GL_NONE path)
+//   - { RGBA8 }         → one LDR color target
+//   - { RGBA16F, RGBA16F } → two HDR targets (scene + bright, MRT)
+//
+// Why a VECTOR and not "two bools"? Because the count is the API: the
+// backend builds glDrawBuffers from its length, and the lighting shader
+// writes layout(location = 0/1). When deferred shading wants 4 G-buffer
+// targets in the capstone, this spec doesn't change shape — only length.
 
 #include "Pink/Core/Core.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace Pink {
 
 enum class DepthAttachmentType
 {
-    None = 0,      // no depth (color-only target)
-    Texture2D,     // single 2D depth texture (directional shadows)
+    None = 0,      // no depth (pure post targets: blur ping-pong)
+    Texture2D,     // single 2D depth texture (directional shadows, HDR scene)
     CubeMap        // 6-face depth cubemap (point shadows)
+};
+
+enum class ColorAttachmentFormat
+{
+    None = 0,   // placeholder — never stored, keeps the enum honest
+    RGBA8,      // 8 bits/channel LDR (the default framebuffer's format)
+    RGBA16F     // 16-bit float HDR. NOT RGBA32F: half the bandwidth, and
+                // 32F is renderable but NOT texture-filterable on many
+                // drivers — 16F filters everywhere. (Lesson math below.)
 };
 
 struct FramebufferSpec
 {
     uint32_t Width = 0;
     uint32_t Height = 0;
-    bool HasColorAttachment = false;
+    std::vector<ColorAttachmentFormat> ColorFormats; // empty = depth-only
     DepthAttachmentType DepthType = DepthAttachmentType::None;
 };
 
@@ -50,6 +64,10 @@ public:
 
     virtual void Resize(uint32_t width, uint32_t height) = 0;
 
+    // Bind one COLOR attachment for sampling in a later pass (the composite
+    // pass samples the HDR scene color; the blur pass samples the bright
+    // target). Index = which attachment, slot = texture unit, as usual.
+    virtual void BindColorAttachment(uint32_t index, uint32_t slot) const = 0;
     // Bind the DEPTH texture for sampling in a later pass (the lighting
     // pass samples the shadow map). Slot = texture unit, as usual.
     virtual void BindDepthTexture(uint32_t slot = 0) const = 0;

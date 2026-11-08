@@ -1,4 +1,4 @@
-// OpenGLFramebuffer.cpp — the OpenGL framebuffer (Lesson 13).
+// OpenGLFramebuffer.cpp — the OpenGL framebuffer (Lessons 13–14).
 
 #include "Pink/Renderer/OpenGL/OpenGLFramebuffer.h"
 
@@ -20,7 +20,7 @@ OpenGLFramebuffer::~OpenGLFramebuffer()
 {
     glDeleteFramebuffers(1, &m_RendererID);
     if (m_DepthTextureID) glDeleteTextures(1, &m_DepthTextureID);
-    if (m_ColorTextureID) glDeleteTextures(1, &m_ColorTextureID);
+    glDeleteTextures((GLsizei)m_ColorTextureIDs.size(), m_ColorTextureIDs.data());
 }
 
 void OpenGLFramebuffer::Invalidate()
@@ -29,27 +29,62 @@ void OpenGLFramebuffer::Invalidate()
     {
         glDeleteFramebuffers(1, &m_RendererID);
         if (m_DepthTextureID) glDeleteTextures(1, &m_DepthTextureID);
-        if (m_ColorTextureID) glDeleteTextures(1, &m_ColorTextureID);
-        m_DepthTextureID = m_ColorTextureID = 0;
+        glDeleteTextures((GLsizei)m_ColorTextureIDs.size(), m_ColorTextureIDs.data());
+        m_DepthTextureID = 0;
+        m_ColorTextureIDs.clear();
     }
 
     glGenFramebuffers(1, &m_RendererID);
     glBindFramebuffer(GL_FRAMEBUFFER, m_RendererID);
 
-    // --- Color attachment (Lesson 14's HDR target; unused by shadow maps)
-    if (m_Spec.HasColorAttachment)
+    // --- Color attachments (Lesson 14)
+    // One texture per ColorFormats entry, attached to COLOR_ATTACHMENT0 + i.
+    // The HDR scene target uses { RGBA16F, RGBA16F }: location 0 = scene
+    // color, location 1 = bright extract (MRT — the lighting shader writes
+    // both in one pass).
+    for (auto format : m_Spec.ColorFormats)
     {
-        glGenTextures(1, &m_ColorTextureID);
-        glBindTexture(GL_TEXTURE_2D, m_ColorTextureID);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (int)m_Spec.Width, (int)m_Spec.Height,
-                     0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        uint32_t id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+
+        // RGBA16F: internal format GL_RGBA16F, data type GL_HALF_FLOAT.
+        // Why not RGBA32F? Two reasons, both hardware: (1) 32F costs twice
+        // the bandwidth per sample — at 1280x720 with several fullscreen
+        // passes, that's real milliseconds on Intel UHD; (2) 32F float
+        // textures are NOT filterable on many drivers (no GL_LINEAR), and
+        // the blur pass NEEDS linear filtering. 16F is the sweet spot —
+        // it's what every shipping engine uses for its HDR target.
+        GLint internalFormat = (format == ColorAttachmentFormat::RGBA16F) ? GL_RGBA16F : GL_RGBA8;
+        GLenum dataType = (format == ColorAttachmentFormat::RGBA16F) ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat,
+                     (int)m_Spec.Width, (int)m_Spec.Height,
+                     0, GL_RGBA, dataType, nullptr);
+        // LINEAR: color targets are SAMPLED (composite, blur) — unlike
+        // depth targets, where the shader does its own comparison.
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, m_ColorTextureID, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        uint32_t attachment = (uint32_t)m_ColorTextureIDs.size();
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + attachment,
+                               GL_TEXTURE_2D, id, 0);
+        m_ColorTextureIDs.push_back(id);
     }
 
-    // --- Depth attachment
+    // Tell the driver which color attachments the shaders write to.
+    // (With one attachment the default is already COLOR_ATTACHMENT0, but
+    // explicit beats implicit — and MRT NEEDS this call.)
+    if (!m_ColorTextureIDs.empty())
+    {
+        std::vector<GLenum> drawBuffers;
+        for (uint32_t i = 0; i < m_ColorTextureIDs.size(); ++i)
+            drawBuffers.push_back(GL_COLOR_ATTACHMENT0 + i);
+        glDrawBuffers((GLsizei)drawBuffers.size(), drawBuffers.data());
+    }
+
+    // --- Depth attachment (unchanged from Lesson 13)
     if (m_Spec.DepthType == DepthAttachmentType::Texture2D)
     {
         glGenTextures(1, &m_DepthTextureID);
@@ -63,8 +98,9 @@ void OpenGLFramebuffer::Invalidate()
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         // CLAMP_TO_BORDER with border = 1.0: anything outside the shadow map
-        // samples as depth 1.0 (farthest) — i.e. LIT. The alternative
-        // (clamp to edge) would stretch edge texels into false shadows.
+        // samples as depth 1.0 (farthest) — i.e. LIT. (The HDR scene target
+        // reuses this depth path; its border mode is irrelevant because the
+        // depth texture is never sampled — but the code stays shared.)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
         float borderColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -93,7 +129,8 @@ void OpenGLFramebuffer::Invalidate()
 
     // --- No color attachment? Tell the driver explicitly. Without this,
     // the framebuffer is INCOMPLETE (it would try to write color nowhere).
-    if (!m_Spec.HasColorAttachment)
+    // This is the Lesson-13 depth-only path — still used by both shadow maps.
+    if (m_ColorTextureIDs.empty())
     {
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
@@ -131,6 +168,13 @@ void OpenGLFramebuffer::Resize(uint32_t width, uint32_t height)
     m_Spec.Width = width;
     m_Spec.Height = height;
     Invalidate(); // textures are sized at creation — resize = recreate
+}
+
+void OpenGLFramebuffer::BindColorAttachment(uint32_t index, uint32_t slot) const
+{
+    PM_CORE_ASSERT(index < m_ColorTextureIDs.size(), "Color attachment index out of range");
+    glActiveTexture(GL_TEXTURE0 + slot);
+    glBindTexture(GL_TEXTURE_2D, m_ColorTextureIDs[index]);
 }
 
 void OpenGLFramebuffer::BindDepthTexture(uint32_t slot) const

@@ -37,6 +37,7 @@ void main()
 #version 330 core
 
 layout(location = 0) out vec4 color;
+layout(location = 1) out vec4 BrightColor; // Lesson 14: MRT bright extract (bloom chain)
 
 in vec3 v_WorldPos;
 in vec3 v_Normal;
@@ -84,6 +85,21 @@ vec3 CalcPointLight(PointLight light, vec3 N, vec3 V)
     return (diff * u_Albedo + spec * vec3(1.0)) * light.Color * light.Intensity * atten;
 }
 
+// --- Lesson 14: Unreal-style soft-knee bright extract ----------------------
+// Same function as Lit_PBR.glsl (see the comment there). Threshold 1.0 only
+// makes sense with HDR — which is why the gamma stub below had to go first:
+// you can't have values above 1.0 AND clamp them to 1.0 in the same shader.
+vec3 BrightExtract(vec3 color)
+{
+    const float threshold = 1.0;
+    const float knee = threshold * 0.5;
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float rq = clamp(luma - threshold + knee, 0.0, 2.0 * knee);
+    rq = rq * rq / (4.0 * knee + 0.0001);
+    float contribution = max(rq, luma - threshold) / max(luma, 0.0001);
+    return color * contribution;
+}
+
 void main()
 {
     vec3 N = normalize(v_Normal);
@@ -109,8 +125,9 @@ void main()
     // shadowed faces from going pitch black.
     result += u_Albedo * 0.05;
 
-    // Linear -> sRGB stub. Lesson 14 (post-processing) does this properly
-    // with an sRGB framebuffer and tone mapping.
-    result = pow(result, vec3(1.0 / 2.2));
+    // Lesson 14: the gamma stub is GONE — and the build task proves the
+    // final picture is unchanged. This shader now outputs linear HDR like
+    // the PBR one; Composite.glsl owns the single display transform.
     color = vec4(result, 1.0);
+    BrightColor = vec4(BrightExtract(result), 1.0);
 }

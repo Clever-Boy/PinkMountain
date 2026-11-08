@@ -14,7 +14,8 @@ DirectionalShadowMap::DirectionalShadowMap(uint32_t size)
 {
     FramebufferSpec spec;
     spec.Width = spec.Height = size;
-    spec.HasColorAttachment = false;
+    // Lesson 14: ColorFormats stays empty = depth-only (the Lesson-13
+    // GL_NONE path). The spec evolved; the shadow maps didn't need to.
     spec.DepthType = DepthAttachmentType::Texture2D;
     m_Framebuffer = Framebuffer::Create(spec);
     RecalculateMatrix();
@@ -84,7 +85,8 @@ PointShadowMap::PointShadowMap(uint32_t size, float farPlane)
 {
     FramebufferSpec spec;
     spec.Width = spec.Height = size;
-    spec.HasColorAttachment = false;
+    // Lesson 14: ColorFormats stays empty = depth-only (the Lesson-13
+    // GL_NONE path). The spec evolved; the shadow maps didn't need to.
     spec.DepthType = DepthAttachmentType::CubeMap;
     m_Framebuffer = Framebuffer::Create(spec);
 }

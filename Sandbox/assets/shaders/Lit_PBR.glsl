@@ -45,6 +45,7 @@ void main()
 #version 330 core
 
 layout(location = 0) out vec4 color;
+layout(location = 1) out vec4 BrightColor; // Lesson 14: MRT bright extract (bloom chain)
 
 in vec3 v_WorldPos;
 in vec3 v_Normal;
@@ -211,6 +212,24 @@ float PointShadowCalculation(vec3 fragPos, vec3 lightPos)
     return shadow / 20.0;
 }
 
+// --- Lesson 14: Unreal-style soft-knee bright extract ----------------------
+// Threshold 1.0 is only meaningful WITH HDR: in LDR nothing exceeds 1.0, so
+// a threshold pass would be empty. The knee softens the cutoff — without it,
+// pixels crossing 1.0 would pop in and out of the bloom as lights flicker.
+//   rq = clamp(luma - threshold + knee, 0, 2*knee); rq² / (4*knee);
+//   contribution = max(rq, luma - threshold) / luma
+// (Declared before main — GLSL has no forward declarations.)
+vec3 BrightExtract(vec3 color)
+{
+    const float threshold = 1.0;
+    const float knee = threshold * 0.5;
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722)); // Rec.709 luminance
+    float rq = clamp(luma - threshold + knee, 0.0, 2.0 * knee);
+    rq = rq * rq / (4.0 * knee + 0.0001);
+    float contribution = max(rq, luma - threshold) / max(luma, 0.0001);
+    return color * contribution;
+}
+
 void main()
 {
     vec3 N = normalize(v_Normal);
@@ -253,6 +272,11 @@ void main()
     vec3 ambient = mix(groundColor, skyColor, N.y * 0.5 + 0.5) * albedo * u_AO;
 
     vec3 result = ambient + Lo;
-    result = pow(result, vec3(1.0 / 2.2)); // linear -> sRGB stub (Lesson 14 does it right)
+
+    // Lesson 14: NO gamma here anymore. This shader outputs LINEAR HDR —
+    // values above 1.0 are legal and expected (that's the point of the
+    // RGBA16F target). Tone mapping + gamma happen exactly once, in
+    // Composite.glsl. (The build task proves the final picture is unchanged.)
     color = vec4(result, 1.0);
+    BrightColor = vec4(BrightExtract(result), 1.0); // MRT: the bloom chain's input, free
 }

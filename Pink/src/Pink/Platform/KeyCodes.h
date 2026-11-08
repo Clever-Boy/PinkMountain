@@ -20,6 +20,8 @@ enum class KeyCode : uint16_t
     D6 = 54, D7 = 55, D8 = 56, D9 = 57,
     Semicolon = 59, Equal = 61,
 
+    LeftBracket = 91, RightBracket = 93, // added Lesson 14 (exposure keys)
+
     A = 65, B = 66, C = 67, D = 68, E = 69, F = 70, G = 71,
     H = 72, I = 73, J = 74, K = 75, L = 76, M = 77, N = 78,
     O = 79, P = 80, Q = 81, R = 82, S = 83, T = 84, U = 85,
